@@ -10,6 +10,7 @@
 #include <fcntl.h>
 
 #include <net_fdm.hxx>
+#include <net_ctrls.hxx>
 
 
 #define D2R (3.14159 / 180.0)
@@ -31,6 +32,10 @@ int fg_port = 5500;
 // update period.  controls how often updates are
 // sent to FG.  in useconds.
 int update_period = 500000;
+
+// Messages to/from FG
+FGNetCtrls fc;
+FGNetFDM fdm;
 
 
 double htond (double x)	
@@ -57,29 +62,129 @@ void pbytes(const char* bytes, const size_t sz) {
   printf("\n");
 }
 
-void fg_receive() {
-  FGNetFDM fdm;
+void fg_ctrl_send() {
+  int len;
+
+  // Aero controls
+  static double throttle = 0.0;	//  0 ... 1
+  double aileron = 0.01;        // -1 ... 1
+  double elevator = 0.02;       // -1 ... 1
+  double rudder = 0.03;		// -1 ... 1
+  double delta = 0.01;
+
+  if (throttle >= 1.0) {
+    delta = -0.01;
+  }
+  if (throttle <= 0.0) {
+    delta = 0.01;
+  }
+
+  throttle += delta;
+
+  fc.version = htonl(FG_NET_CTRLS_VERSION);
+
+  fc.num_engines=htonl(1);
+  fc.throttle[0]=htond(throttle); 
+  
+  fc.aileron = htond(aileron);
+  fc.elevator = htond(elevator);
+  fc.rudder = htond(rudder);
+
+  len = sendto(mySocket, (char *)&fc, sizeof(fc), 0, (struct sockaddr *)&fgAddr, sizeof(fgAddr));
+  printf("Successfully sent packet of size %i, to %s:%d\n", len, inet_ntoa(fgAddr.sin_addr), ntohs(fgAddr.sin_port));
+}
+
+
+void fg_ctrl_receive() {
+  int len;
+
+  // Aero controls
+  double throttle;    //  0 ... 1
+  double aileron;     // -1 ... 1
+  double elevator;    // -1 ... 1
+  double rudder;      // -1 ... 1
+
+  struct sockaddr_in fgAddr;
+  socklen_t si_len = sizeof(fgAddr);
+  
+  if ((len = recvfrom(mySocket, &fc, sizeof(fc), 0, (struct sockaddr*) &(fgAddr), &si_len)) == -1) {
+    printf("No data received\n");
+  } else {
+    /*
+    printf("Recieved packet of size %i, from %s:%d\n", len, inet_ntoa(fgAddr.sin_addr), ntohs(fgAddr.sin_port));
+    printf("bytes: ");
+    pbytes((char*)&fc, len);
+    printf("\n");
+    */
+  }
+  
+  if (len != sizeof(fc)) {
+    printf("Recieve fc size mismatch %i\n", len);
+    return;
+  }
+
+  if (fc.version != htonl(FG_NET_CTRLS_VERSION)) {
+    printf("Recieve fc version mismatch %i != %i\n", htonl(fc.version), FG_NET_CTRLS_VERSION);
+    return;
+  }
+
+  throttle = htond(fc.throttle[0]);
+  aileron =  htond(fc.aileron);
+  elevator = htond(fc.elevator);
+  rudder = htond(fc.rudder);
+ 
+  printf("Flight control received throttle=%f aileron=%f elevator=%f rudder=%f\n", 
+	 throttle, aileron, elevator, rudder);
+  
+}
+
+void fg_fdm_receive() {
   struct sockaddr_in fgAddr;
   socklen_t si_len = sizeof(fgAddr);
   int len;
 
-  // Clear reception buffer
-  memset((char*)&fdm, '\0', sizeof(fdm));
-  
+  double latitude;
+  double longitude;
+  double altitude;
+  float roll;
+  float pitch;
+  float yaw;
+
   if ((len = recvfrom(mySocket, &fdm, sizeof(fdm), 0, (struct sockaddr*) &(fgAddr), &si_len)) == -1) {
     printf("No data received\n");
   } else {
-    printf("Recieved packet of size %i, from %s:%d\n",
-	   len,
-	   inet_ntoa(fgAddr.sin_addr), 
-	   ntohs(fgAddr.sin_port));
+    /*
+    printf("Recieved packet of size %i, from %s:%d\n", len, inet_ntoa(fgAddr.sin_addr), ntohs(fgAddr.sin_port));
     printf("bytes: ");
     pbytes((char*)&fdm, len);
     printf("\n");
+    */
   }
+  
+  if (len != sizeof(fdm)) {
+    printf("Recieve fdm size mismatch %i\n", len);
+    return;
+  }
+
+  if (fdm.version != htonl(FG_NET_FDM_VERSION)) {
+    printf("Recieve fdm version mismatch %i != %i\n", htonl(fdm.version), FG_NET_FDM_VERSION);
+    return;
+  }
+
+  latitude = htond(fdm.latitude) * R2D;
+  longitude = htond(fdm.longitude) * R2D;
+  altitude = htond(fdm.altitude) * R2D;
+  
+  roll = htonf(fdm.phi) * R2D;
+  pitch = htonf(fdm.theta) * R2D;
+  yaw = htonf(fdm.psi) * R2D;
+  
+  printf("Flight data received latitude=%f longitude=%f altitude=%f roll=%f pitch=%f yaw=%f\n", 
+	 latitude, longitude, altitude, roll, pitch, yaw);
+  
 }
 
-void fg_send() {
+void fg_fdm_send() {
   static bool flag = true;
   static double latitude = 58.406; // degs
   static double longitude = 15.673; // degs
@@ -95,8 +200,6 @@ void fg_send() {
   
   float visibility = 5000.0; // meters
   
-  FGNetFDM fdm;
-  memset(&fdm,0,sizeof(fdm));
   fdm.version = htonl(FG_NET_FDM_VERSION);
 	
   fdm.latitude = htond(latitude * D2R);
@@ -119,14 +222,12 @@ void fg_send() {
   
   fdm.visibility = htonf(visibility);
   
-  len = sendto(mySocket, (char *)&fdm, sizeof(fdm), 0, (struct sockaddr *)&fgAddr, sizeof(fgAddr));
-  printf("Successfully sent packet of size %i, to %s:%d\n",
-	 len,
-	 inet_ntoa(fgAddr.sin_addr), 
-	 ntohs(fgAddr.sin_port));
+  //len = sendto(mySocket, (char *)&fdm, sizeof(fdm), 0, (struct sockaddr *)&fgAddr, sizeof(fgAddr));
+  len = sendto(mySocket, (char *)&fdm, sizeof(fdm), 0, (struct sockaddr *)&myAddr, sizeof(fgAddr));
+  //printf("Successfully sent packet of size %i, to %s:%d\n", len, inet_ntoa(fgAddr.sin_addr), ntohs(fgAddr.sin_port));
   
-    if (flag){
-      roll += 5.0;
+  if (flag){
+    roll += 5.0;
   } else {            
     roll -= 5.0;
   }
@@ -138,13 +239,18 @@ void run() {
 
   while (true) {
     usleep(update_period);
-    fg_send();
-    fg_receive();
+    //fg_ctrl_send();
+    fg_ctrl_receive();
+    //fg_fdm_send();
+    //fg_fdm_receive();
   }
 }
 
 int main(int argc, char ** argv)
 {
+  memset(&fc, 0, sizeof(fc));
+  memset(&fdm, 0, sizeof(fdm));
+
   memset(&myAddr, 0, sizeof(myAddr));
   myAddr.sin_family = AF_INET;
   myAddr.sin_port = htons(my_port);
