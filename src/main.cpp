@@ -13,9 +13,25 @@
 
 
 #define D2R (3.14159 / 180.0)
+#define R2D (180.0 / 3.14159)
 
 
 using namespace std;
+
+int mySocket = -1;
+struct sockaddr_in myAddr;
+struct sockaddr_in fgAddr;
+
+// IP and port where FG is listening
+char my_ip[] = "10.0.2.15";
+int my_port = 5501;
+char fg_ip[] = "192.168.1.114";
+int fg_port = 5500;
+
+// update period.  controls how often updates are
+// sent to FG.  in useconds.
+int update_period = 500000;
+
 
 double htond (double x)	
 {
@@ -34,31 +50,48 @@ float htonf (float x)
     return x;
 }
 
-int mySocket = -1;
-struct sockaddr_in myAddr;
-struct sockaddr_in fgAddr;
-
-// IP and port where FG is listening
-char my_ip[] = "127.0.0.1";
-int my_port = 5501;
-char fg_ip[] = "192.168.1.114";
-int fg_port = 5500;
-
-// update period.  controls how often updates are
-// sent to FG.  in useconds.
-int update_period = 100000;
+void pbytes(const char* bytes, const size_t sz) {
+  for (size_t i=0; i<sz; i++) {
+    printf("%02hhX", *(bytes+i));
+  }
+  printf("\n");
+}
 
 void fg_receive() {
+  FGNetFDM fdm;
+  struct sockaddr_in fgAddr;
+  socklen_t si_len = sizeof(fgAddr);
+  int len;
+
+  // Clear reception buffer
+  memset((char*)&fdm, '\0', sizeof(fdm));
+  
+  if ((len = recvfrom(mySocket, &fdm, sizeof(fdm), 0, (struct sockaddr*) &(fgAddr), &si_len)) == -1) {
+    printf("No data received\n");
+  } else {
+    printf("Recieved packet of size %i, from %s:%d\n",
+	   len,
+	   inet_ntoa(fgAddr.sin_addr), 
+	   ntohs(fgAddr.sin_port));
+    printf("bytes: ");
+    pbytes((char*)&fdm, len);
+    printf("\n");
+  }
 }
 
 void fg_send() {
-  double latitude = 45.59823; // degs
-  double longitude = -120.69202; // degs
-  double altitude = 150.0; // meters above sea level
-  
-  float roll = 0.0; // degs
-  float pitch = 0.0; // degs
-  float yaw = 0.0; // degs
+  static bool flag = true;
+  static double latitude = 58.406; // degs
+  static double longitude = 15.673; // degs
+  static double altitude = 200.0; // meters above sea level
+  static float roll = 0.0; // degs
+  static float pitch = 0.0; // degs
+  static float yaw = 0.0; // degs
+
+  int len;
+
+  latitude+= 0.001;
+  longitude += 0.001;
   
   float visibility = 5000.0; // meters
   
@@ -86,10 +119,13 @@ void fg_send() {
   
   fdm.visibility = htonf(visibility);
   
-  sendto(mySocket, (char *)&fdm, sizeof(fdm), 0, (struct sockaddr *)&fgAddr, sizeof(fgAddr));
+  len = sendto(mySocket, (char *)&fdm, sizeof(fdm), 0, (struct sockaddr *)&fgAddr, sizeof(fgAddr));
+  printf("Successfully sent packet of size %i, to %s:%d\n",
+	 len,
+	 inet_ntoa(fgAddr.sin_addr), 
+	 ntohs(fgAddr.sin_port));
   
-  static bool flag = true;
-  if (flag){
+    if (flag){
       roll += 5.0;
   } else {            
     roll -= 5.0;
@@ -119,7 +155,7 @@ int main(int argc, char ** argv)
   fgAddr.sin_port = htons(fg_port);
   fgAddr.sin_addr.s_addr = inet_addr(fg_ip);
 
-  mySocket = socket(AF_INET, SOCK_DGRAM, 0);
+  mySocket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
   if (mySocket < 0) {
     perror("socket() failed");
   }
